@@ -11,7 +11,9 @@ semantics, and explicit capability issues so unsupported syntax is observable ra
 dropped.
 
 `TiqianMarkdown` owns neither scrolling nor network image loading. Hosts compose it into their own
-scroll container and replace code, image, thematic-break, or unsupported-block slots as needed.
+scroll container and replace code, image, math, HTML, table, footnote, custom, thematic-break, or
+unsupported-block slots as needed. Host-only blocks are identified by pure-data
+`MarkdownCustomBlock` values; their parser nodes and Compose content stay in the host adapter.
 
 Text falls back block-by-block to Compose text when Tiqian cannot preserve the lowered semantics.
 `MarkdownTextFallbackPolicy.Disabled` keeps a no-fallback dogfood mode.

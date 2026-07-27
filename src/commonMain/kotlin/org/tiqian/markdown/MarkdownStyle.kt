@@ -52,6 +52,12 @@ data class MarkdownStyle(
     val listItemSpacing: Dp = 8.dp,
     val codeBackground: Color = Color(0xFFF6F8FA),
     val codePadding: Dp = 12.dp,
+    val mathBackground: Color = codeBackground,
+    val tableBorderColor: Color = Color(0xFFD8DEE4),
+    val tableHeaderBackground: Color = Color(0xFFF6F8FA),
+    val tableCellPadding: Dp = 8.dp,
+    val tableColumnWidth: Dp = 160.dp,
+    val footnoteLabelWidth: Dp = 32.dp,
     val thematicBreakColor: Color = Color(0xFFD8DEE4),
 )
 

@@ -16,11 +16,13 @@ import com.hrm.markdown.parser.ast.Emphasis
 import com.hrm.markdown.parser.ast.EscapedChar
 import com.hrm.markdown.parser.ast.FencedCodeBlock
 import com.hrm.markdown.parser.ast.Figure
+import com.hrm.markdown.parser.ast.FootnoteDefinition
 import com.hrm.markdown.parser.ast.FootnoteReference
 import com.hrm.markdown.parser.ast.FrontMatter
 import com.hrm.markdown.parser.ast.HardLineBreak
 import com.hrm.markdown.parser.ast.Heading
 import com.hrm.markdown.parser.ast.Highlight
+import com.hrm.markdown.parser.ast.HtmlBlock
 import com.hrm.markdown.parser.ast.HtmlEntity
 import com.hrm.markdown.parser.ast.Image
 import com.hrm.markdown.parser.ast.IndentedCodeBlock
@@ -34,6 +36,7 @@ import com.hrm.markdown.parser.ast.Link
 import com.hrm.markdown.parser.ast.LinkReferenceDefinition
 import com.hrm.markdown.parser.ast.ListBlock
 import com.hrm.markdown.parser.ast.ListItem
+import com.hrm.markdown.parser.ast.MathBlock
 import com.hrm.markdown.parser.ast.Node
 import com.hrm.markdown.parser.ast.Paragraph
 import com.hrm.markdown.parser.ast.RubyText
@@ -45,6 +48,11 @@ import com.hrm.markdown.parser.ast.StrongEmphasis
 import com.hrm.markdown.parser.ast.StyledText
 import com.hrm.markdown.parser.ast.Subscript
 import com.hrm.markdown.parser.ast.Superscript
+import com.hrm.markdown.parser.ast.Table
+import com.hrm.markdown.parser.ast.TableBody
+import com.hrm.markdown.parser.ast.TableCell
+import com.hrm.markdown.parser.ast.TableHead
+import com.hrm.markdown.parser.ast.TableRow
 import com.hrm.markdown.parser.ast.Text
 import com.hrm.markdown.parser.ast.ThematicBreak
 import com.hrm.markdown.parser.ast.WikiLink
@@ -52,6 +60,7 @@ import com.hrm.markdown.parser.ast.WikiLink
 /** Compiles parser output into the renderer-owned, Compose-free model. */
 class MarkdownCompiler(
     private val parser: MarkdownParser = MarkdownParser(),
+    private val customBlockAdapter: MarkdownCustomBlockAdapter? = null,
 ) {
     fun compile(markdown: String): MarkdownRenderDocument =
         compile(parser.parse(markdown), markdown)
@@ -144,6 +153,26 @@ class MarkdownCompiler(
                 metadata = metadata,
             )
 
+            is MathBlock -> MarkdownMathBlock(
+                expression = node.literal,
+                metadata = metadata,
+            )
+
+            is HtmlBlock -> MarkdownHtmlBlock(
+                html = node.literal,
+                htmlType = node.htmlType,
+                metadata = metadata,
+            )
+
+            is Table -> compileTable(node, path, source, sourceLocator, issues, metadata)
+
+            is FootnoteDefinition -> MarkdownFootnoteDefinition(
+                label = node.label,
+                index = node.index,
+                blocks = compileBlockChildren(node, path, source, sourceLocator, issues),
+                metadata = metadata,
+            )
+
             // Definitions and front matter affect the document but do not produce visible blocks.
             is LinkReferenceDefinition,
             is AbbreviationDefinition,
@@ -153,6 +182,7 @@ class MarkdownCompiler(
             -> null
 
             else -> {
+                customBlockAdapter?.adapt(node, metadata)?.let { return it }
                 issues += MarkdownCapabilityIssue(
                     kind = MarkdownCapabilityIssueKind.UnsupportedBlock,
                     nodeType = node.typeName(),
@@ -165,6 +195,47 @@ class MarkdownCompiler(
                 )
             }
         }
+    }
+
+    private fun compileTable(
+        node: Table,
+        path: List<Int>,
+        source: String?,
+        sourceLocator: MarkdownSourceLocator?,
+        issues: MutableList<MarkdownCapabilityIssue>,
+        metadata: MarkdownNodeMetadata,
+    ): MarkdownTable {
+        val rows = buildList {
+            node.children.forEachIndexed { sectionIndex, section ->
+                val sectionIsHeader = section is TableHead
+                if (section !is TableHead && section !is TableBody) return@forEachIndexed
+                section.children.forEachIndexed { rowIndex, rowNode ->
+                    val row = rowNode as? TableRow ?: return@forEachIndexed
+                    val rowPath = path + sectionIndex + rowIndex
+                    add(
+                        MarkdownTableRow(
+                            cells = row.children.mapIndexedNotNull { cellIndex, cellNode ->
+                                val cell = cellNode as? TableCell ?: return@mapIndexedNotNull null
+                                val cellMetadata = cell.metadata(rowPath + cellIndex, source, sourceLocator)
+                                MarkdownTableCell(
+                                    text = compileText(cell, cellMetadata.sourceSpan, sourceLocator, issues),
+                                    alignment = cell.alignment.toRenderAlignment(),
+                                    header = sectionIsHeader || cell.isHeader,
+                                    metadata = cellMetadata,
+                                )
+                            },
+                            header = sectionIsHeader,
+                            metadata = row.metadata(rowPath, source, sourceLocator),
+                        ),
+                    )
+                }
+            }
+        }
+        return MarkdownTable(
+            columnAlignments = node.columnAlignments.map(Table.Alignment::toRenderAlignment),
+            rows = rows,
+            metadata = metadata,
+        )
     }
 
     private fun compileBlockChildren(
@@ -225,11 +296,20 @@ private class MarkdownTextBuilder(
             }
             is RubyText -> marked(node, MarkdownTextMark.Ruby(node.annotation)) { value.append(node.base) }
             is KeyboardInput -> marked(node, MarkdownTextMark.InlineCode) { value.append(node.literal) }
-            is Image -> unsupported(node) {
+            is Image -> marked(
+                node,
+                MarkdownTextMark.InlineImage(
+                    destination = node.destination,
+                    description = node.children.readableText(),
+                    title = node.title,
+                    widthPixels = node.imageWidth,
+                    heightPixels = node.imageHeight,
+                ),
+            ) {
                 node.children.forEach(::append)
                 if (node.children.isEmpty()) value.append(node.title ?: node.destination)
             }
-            is InlineMath -> unsupported(node) { value.append(node.literal) }
+            is InlineMath -> marked(node, MarkdownTextMark.InlineMath(node.literal)) { value.append(node.literal) }
             is InlineHtml -> unsupported(node) { value.append(node.literal) }
             is StyledText -> unsupported(node) { node.children.forEach(::append) }
             is Spoiler -> unsupported(node) { node.children.forEach(::append) }
@@ -271,6 +351,20 @@ private class MarkdownTextBuilder(
         documentIssues += issue
     }
 }
+
+fun interface MarkdownCustomBlockAdapter {
+    /** Return null to let the compiler report and preserve this node as unsupported content. */
+    fun adapt(node: Node, metadata: MarkdownNodeMetadata): MarkdownCustomBlock?
+}
+
+private fun Table.Alignment.toRenderAlignment(): MarkdownTableAlignment = when (this) {
+    Table.Alignment.LEFT -> MarkdownTableAlignment.Start
+    Table.Alignment.CENTER -> MarkdownTableAlignment.Center
+    Table.Alignment.RIGHT -> MarkdownTableAlignment.End
+    Table.Alignment.NONE -> MarkdownTableAlignment.Unspecified
+}
+
+private fun List<Node>.readableText(): String = joinToString(separator = "") { it.readableText() }
 
 private fun Node.metadata(
     path: List<Int>,

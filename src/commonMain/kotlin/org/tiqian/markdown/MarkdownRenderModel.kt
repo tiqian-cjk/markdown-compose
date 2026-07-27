@@ -87,6 +87,57 @@ data class MarkdownImageBlock(
     override val metadata: MarkdownNodeMetadata,
 ) : MarkdownBlock
 
+data class MarkdownMathBlock(
+    val expression: String,
+    override val metadata: MarkdownNodeMetadata,
+) : MarkdownBlock
+
+data class MarkdownHtmlBlock(
+    val html: String,
+    val htmlType: Int,
+    override val metadata: MarkdownNodeMetadata,
+) : MarkdownBlock
+
+data class MarkdownTable(
+    val columnAlignments: List<MarkdownTableAlignment>,
+    val rows: List<MarkdownTableRow>,
+    override val metadata: MarkdownNodeMetadata,
+) : MarkdownBlock
+
+enum class MarkdownTableAlignment {
+    Start,
+    Center,
+    End,
+    Unspecified,
+}
+
+data class MarkdownTableRow(
+    val cells: List<MarkdownTableCell>,
+    val header: Boolean,
+    val metadata: MarkdownNodeMetadata,
+)
+
+data class MarkdownTableCell(
+    val text: MarkdownText,
+    val alignment: MarkdownTableAlignment,
+    val header: Boolean,
+    val metadata: MarkdownNodeMetadata,
+)
+
+data class MarkdownFootnoteDefinition(
+    val label: String,
+    val index: Int,
+    val blocks: List<MarkdownBlock>,
+    override val metadata: MarkdownNodeMetadata,
+) : MarkdownBlock
+
+/** Host-owned content identified without carrying a parser node or Compose content in the model. */
+data class MarkdownCustomBlock(
+    val kind: String,
+    val attributes: Map<String, String> = emptyMap(),
+    override val metadata: MarkdownNodeMetadata,
+) : MarkdownBlock
+
 /**
  * A loss-shaped boundary for syntax that this version does not render natively yet.
  * Hosts can replace it through a block slot; the default renderer keeps readable content visible.
@@ -144,6 +195,18 @@ sealed interface MarkdownTextMark {
 
     data class Ruby(
         val annotation: String,
+    ) : MarkdownTextMark
+
+    data class InlineMath(
+        val expression: String,
+    ) : MarkdownTextMark
+
+    data class InlineImage(
+        val destination: String,
+        val description: String,
+        val title: String? = null,
+        val widthPixels: Int? = null,
+        val heightPixels: Int? = null,
     ) : MarkdownTextMark
 }
 

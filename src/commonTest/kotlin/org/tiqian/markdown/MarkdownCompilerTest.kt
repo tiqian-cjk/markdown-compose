@@ -1,5 +1,7 @@
 package org.tiqian.markdown
 
+import com.hrm.markdown.parser.ast.DefinitionList
+import com.hrm.markdown.parser.ast.Document
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -73,28 +75,67 @@ class MarkdownCompilerTest {
     }
 
     @Test
-    fun unsupportedInlineIsReportedWithoutDroppingReadableText() {
+    fun inlineMathIsTypedWithoutDroppingReadableText() {
         val markdown = "公式 ${'$'}x + y${'$'} 仍然可读"
 
         val document = compiler.compile(markdown)
         val paragraph = assertIs<MarkdownParagraph>(document.blocks.single())
 
         assertEquals("公式 x + y 仍然可读", paragraph.text.value)
-        assertEquals(1, paragraph.text.issues.size)
-        assertEquals(MarkdownCapabilityIssueKind.UnsupportedInline, paragraph.text.issues.single().kind)
-        assertEquals("InlineMath", paragraph.text.issues.single().nodeType)
-        assertEquals(paragraph.text.issues, document.issues)
+        assertEquals(
+            MarkdownTextMark.InlineMath("x + y"),
+            paragraph.text.spans.single { it.mark is MarkdownTextMark.InlineMath }.mark,
+        )
+        assertTrue(paragraph.text.issues.isEmpty())
+        assertTrue(document.issues.isEmpty())
     }
 
     @Test
-    fun unsupportedBlockBecomesAnExplicitFallbackBlock() {
+    fun tableIsCompiledIntoRendererOwnedRowsAndCells() {
         val markdown = "| 甲 | 乙 |\n| --- | --- |\n| 一 | 二 |"
 
         val document = compiler.compile(markdown)
-        val block = assertIs<MarkdownUnsupportedBlock>(document.blocks.single())
+        val block = assertIs<MarkdownTable>(document.blocks.single())
 
-        assertEquals("Table", block.nodeType)
-        assertEquals(markdown, block.fallbackText)
-        assertEquals(MarkdownCapabilityIssueKind.UnsupportedBlock, document.issues.single().kind)
+        assertEquals(2, block.rows.size)
+        assertTrue(block.rows.first().header)
+        assertEquals("甲", block.rows.first().cells.first().text.value)
+        assertEquals("二", block.rows.last().cells.last().text.value)
+        assertTrue(document.issues.isEmpty())
+    }
+
+    @Test
+    fun extendedBlocksRemainTypedAtTheRendererBoundary() {
+        val markdown = """
+            ${'$'}${'$'}x^2 + y^2${'$'}${'$'}
+
+            <section>保留 HTML</section>
+
+            正文[^note]
+
+            [^note]: 脚注内容
+        """.trimIndent()
+
+        val document = compiler.compile(markdown)
+
+        assertTrue(document.blocks.any { it is MarkdownMathBlock })
+        assertTrue(document.blocks.any { it is MarkdownHtmlBlock })
+        assertTrue(document.blocks.any { it is MarkdownFootnoteDefinition })
+        assertTrue(document.issues.isEmpty())
+    }
+
+    @Test
+    fun hostCanAdaptUnknownBlocksWithoutPuttingParserNodesInTheRenderModel() {
+        val ast = Document().apply { appendChild(DefinitionList()) }
+        val compiler = MarkdownCompiler(
+            customBlockAdapter = MarkdownCustomBlockAdapter { _, metadata ->
+                MarkdownCustomBlock(kind = "host.native", metadata = metadata)
+            },
+        )
+
+        val document = compiler.compile(ast)
+
+        assertEquals("host.native", assertIs<MarkdownCustomBlock>(document.blocks.single()).kind)
+        assertTrue(document.issues.isEmpty())
     }
 }
