@@ -11,6 +11,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import org.tiqian.core.Ic
+import org.tiqian.core.ic
 
 @Immutable
 data class MarkdownStyle(
@@ -43,16 +45,28 @@ data class MarkdownStyle(
     ),
     val highlight: SpanStyle = SpanStyle(background = Color(0xFFFFE58F)),
     val abbreviation: SpanStyle = SpanStyle(textDecoration = TextDecoration.Underline),
+    val footnote: SpanStyle = SpanStyle(fontSize = 0.8.em),
+    val keyboardInput: SpanStyle = SpanStyle(
+        fontFamily = FontFamily.Monospace,
+        fontSize = 0.8.em,
+        fontWeight = FontWeight.Medium,
+    ),
     val blockSpacing: Dp = 16.dp,
     val compactBlockSpacing: Dp = 6.dp,
     val quoteBarColor: Color = Color(0xFFD0D7DE),
     val quoteBarWidth: Dp = 3.dp,
     val quoteContentPadding: Dp = 12.dp,
-    val listMarkerWidth: Dp = 32.dp,
+    /** Minimum body indent when the list measure is not narrow. */
+    val listContentIndent: Ic = 2.ic,
+    /** Minimum body indent below [listNarrowBreakpoint]. */
+    val listNarrowContentIndent: Ic = 1.ic,
+    /** Measures narrower than this many CJK cells use [listNarrowContentIndent]. */
+    val listNarrowBreakpoint: Ic = 20.ic,
     val listItemSpacing: Dp = 8.dp,
     val codeBackground: Color = Color(0xFFF6F8FA),
     val codePadding: Dp = 12.dp,
     val mathBackground: Color = codeBackground,
+    val math: MarkdownMathStyle = MarkdownMathStyle(),
     val tableBorderColor: Color = Color(0xFFD8DEE4),
     val tableHeaderBackground: Color = Color(0xFFF6F8FA),
     val tableCellPadding: Dp = 8.dp,

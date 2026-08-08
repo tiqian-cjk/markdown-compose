@@ -2,7 +2,9 @@ package org.tiqian.markdown
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -14,27 +16,36 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.LinkAnnotation
-import androidx.compose.ui.text.LinkInteractionListener
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
+import org.tiqian.compose.CjkInlineObject
+import org.tiqian.compose.CjkInlineObjectBoundary
+import org.tiqian.compose.CjkInlineObjectPreferredStretch
+import org.tiqian.compose.CjkInlineObjectPreferredStretchKind
 import org.tiqian.compose.CjkText
 import org.tiqian.compose.cjkTextCompatibility
-import org.tiqian.compose.ruby
+import org.tiqian.compose.rememberParagraphMeasurer
+import org.tiqian.compose.toCjkTextStyle
+import org.tiqian.compose.toCoreTextStyle
+import org.tiqian.core.LayoutConstraints
+import org.tiqian.core.LayoutResult
+import org.tiqian.core.LineLengthGrid
+import org.tiqian.core.ParagraphStyle
+import org.tiqian.core.ic
+import kotlin.math.ceil
 
 enum class MarkdownTextFallbackPolicy {
     /** Use Compose text whenever a text block contains semantics Tiqian cannot preserve. */
@@ -59,53 +70,32 @@ class MarkdownBlockSlots(
 
 val DefaultMarkdownBlockSlots: MarkdownBlockSlots = MarkdownBlockSlots()
 
-/** Parses and renders Markdown content. This composable intentionally does not own scrolling. */
-@Composable
-fun TiqianMarkdown(
-    markdown: String,
-    modifier: Modifier = Modifier,
-    style: MarkdownStyle = MarkdownStyle(),
-    slots: MarkdownBlockSlots = DefaultMarkdownBlockSlots,
-    fallbackPolicy: MarkdownTextFallbackPolicy = MarkdownTextFallbackPolicy.Automatic,
-    onLinkClick: ((String) -> Unit)? = null,
-    onFootnoteClick: ((String) -> Unit)? = null,
-    compiler: MarkdownCompiler? = null,
-) {
-    val defaultCompiler = remember { MarkdownCompiler() }
-    val resolvedCompiler = compiler ?: defaultCompiler
-    val document = remember(markdown, resolvedCompiler) { resolvedCompiler.compile(markdown) }
-    TiqianMarkdown(
-        document = document,
-        modifier = modifier,
-        style = style,
-        slots = slots,
-        fallbackPolicy = fallbackPolicy,
-        onLinkClick = onLinkClick,
-        onFootnoteClick = onFootnoteClick,
-    )
-}
-
-/** Renders an already compiled document without parsing it again. */
+/** Renders a host-adapted Markdown document without owning parsing or scrolling. */
 @Composable
 fun TiqianMarkdown(
     document: MarkdownRenderDocument,
     modifier: Modifier = Modifier,
     style: MarkdownStyle = MarkdownStyle(),
     slots: MarkdownBlockSlots = DefaultMarkdownBlockSlots,
+    inlineSlots: MarkdownInlineSlots = DefaultMarkdownInlineSlots,
     fallbackPolicy: MarkdownTextFallbackPolicy = MarkdownTextFallbackPolicy.Automatic,
     onLinkClick: ((String) -> Unit)? = null,
     onFootnoteClick: ((String) -> Unit)? = null,
 ) {
-    MarkdownBlocks(
-        blocks = document.blocks,
-        modifier = modifier,
-        style = style,
-        slots = slots,
-        fallbackPolicy = fallbackPolicy,
-        onLinkClick = onLinkClick,
-        onFootnoteClick = onFootnoteClick,
-        compact = false,
-    )
+    val footnoteNavigationState = rememberMarkdownFootnoteNavigationState()
+    CompositionLocalProvider(LocalMarkdownFootnoteNavigationState provides footnoteNavigationState) {
+        MarkdownBlocks(
+            blocks = document.blocks,
+            modifier = modifier,
+            style = style,
+            slots = slots,
+            inlineSlots = inlineSlots,
+            fallbackPolicy = fallbackPolicy,
+            onLinkClick = onLinkClick,
+            onFootnoteClick = onFootnoteClick,
+            compact = false,
+        )
+    }
 }
 
 @Composable
@@ -114,6 +104,7 @@ private fun MarkdownBlocks(
     modifier: Modifier,
     style: MarkdownStyle,
     slots: MarkdownBlockSlots,
+    inlineSlots: MarkdownInlineSlots,
     fallbackPolicy: MarkdownTextFallbackPolicy,
     onLinkClick: ((String) -> Unit)?,
     onFootnoteClick: ((String) -> Unit)?,
@@ -128,6 +119,7 @@ private fun MarkdownBlocks(
                     block = block,
                     style = style,
                     slots = slots,
+                    inlineSlots = inlineSlots,
                     fallbackPolicy = fallbackPolicy,
                     onLinkClick = onLinkClick,
                     onFootnoteClick = onFootnoteClick,
@@ -142,6 +134,7 @@ private fun MarkdownBlock(
     block: MarkdownBlock,
     style: MarkdownStyle,
     slots: MarkdownBlockSlots,
+    inlineSlots: MarkdownInlineSlots,
     fallbackPolicy: MarkdownTextFallbackPolicy,
     onLinkClick: ((String) -> Unit)?,
     onFootnoteClick: ((String) -> Unit)?,
@@ -151,6 +144,7 @@ private fun MarkdownBlock(
             block.text,
             style.body,
             style,
+            inlineSlots,
             fallbackPolicy,
             onLinkClick,
             onFootnoteClick,
@@ -159,6 +153,7 @@ private fun MarkdownBlock(
             block.text,
             style.heading(block.level),
             style,
+            inlineSlots,
             fallbackPolicy,
             onLinkClick,
             onFootnoteClick,
@@ -175,6 +170,7 @@ private fun MarkdownBlock(
                 modifier = Modifier.weight(1f).padding(start = style.quoteContentPadding),
                 style = style,
                 slots = slots,
+                inlineSlots = inlineSlots,
                 fallbackPolicy = fallbackPolicy,
                 onLinkClick = onLinkClick,
                 onFootnoteClick = onFootnoteClick,
@@ -182,16 +178,32 @@ private fun MarkdownBlock(
             )
         }
 
-        is MarkdownList -> MarkdownListBlock(block, style, slots, fallbackPolicy, onLinkClick, onFootnoteClick)
+        is MarkdownList -> MarkdownListBlock(
+            block,
+            style,
+            slots,
+            inlineSlots,
+            fallbackPolicy,
+            onLinkClick,
+            onFootnoteClick,
+        )
         is MarkdownCodeBlock -> slots.codeBlock?.invoke(block, style) ?: DefaultMarkdownCodeBlock(block, style)
         is MarkdownImageBlock -> slots.imageBlock?.invoke(block, style)
-            ?: DefaultMarkdownImageBlock(block, style, onLinkClick)
+            ?: DefaultMarkdownImageBlock(block, style, onLinkClick, inlineSlots)
         is MarkdownMathBlock -> slots.mathBlock?.invoke(block, style) ?: DefaultMarkdownMathBlock(block, style)
         is MarkdownHtmlBlock -> slots.htmlBlock?.invoke(block, style) ?: DefaultMarkdownHtmlBlock(block, style)
         is MarkdownTable -> slots.table?.invoke(block, style)
-            ?: DefaultMarkdownTable(block, style, fallbackPolicy, onLinkClick, onFootnoteClick)
+            ?: DefaultMarkdownTable(block, style, fallbackPolicy, onLinkClick, onFootnoteClick, inlineSlots)
         is MarkdownFootnoteDefinition -> slots.footnoteDefinition?.invoke(block, style)
-            ?: DefaultMarkdownFootnoteDefinition(block, style, slots, fallbackPolicy, onLinkClick, onFootnoteClick)
+            ?: DefaultMarkdownFootnoteDefinition(
+                block,
+                style,
+                slots,
+                fallbackPolicy,
+                onLinkClick,
+                onFootnoteClick,
+                inlineSlots,
+            )
         is MarkdownCustomBlock -> slots.customBlock?.invoke(block, style)
             ?: DefaultMarkdownCustomBlock(block, style)
         is MarkdownThematicBreak -> slots.thematicBreak?.invoke(block, style) ?: DefaultMarkdownThematicBreak(style)
@@ -205,34 +217,94 @@ private fun MarkdownListBlock(
     block: MarkdownList,
     style: MarkdownStyle,
     slots: MarkdownBlockSlots,
+    inlineSlots: MarkdownInlineSlots,
     fallbackPolicy: MarkdownTextFallbackPolicy,
     onLinkClick: ((String) -> Unit)?,
     onFootnoteClick: ((String) -> Unit)?,
 ) {
-    Column {
-        block.items.forEachIndexed { index, item ->
-            if (index > 0) Spacer(Modifier.height(if (block.tight) style.compactBlockSpacing else style.listItemSpacing))
-            Row(Modifier.fillMaxWidth()) {
-                val marker = when (item.task) {
-                    MarkdownTaskState.Checked -> "[x]"
-                    MarkdownTaskState.Unchecked -> "[ ]"
-                    null -> if (block.ordered) "${block.startNumber + index}." else "•"
+    val density = LocalDensity.current
+    val markerMeasurer = rememberParagraphMeasurer()
+    val markerParagraphStyle = remember {
+        ParagraphStyle(
+            firstLineIndent = 0.ic,
+            lineLengthGrid = LineLengthGrid(enabled = false),
+        )
+    }
+    val markerTextStyle = remember(style.body) { style.body.toCjkTextStyle() }
+    val coreMarkerTextStyle = remember(markerTextStyle, density) {
+        markerTextStyle.toCoreTextStyle(density)
+    }
+    val markers = remember(block) {
+        block.items.mapIndexed { index, item ->
+            when (item.task) {
+                MarkdownTaskState.Checked -> "[x]"
+                MarkdownTaskState.Unchecked -> "[ ]"
+                null -> if (block.ordered) "${block.startNumber + index}." else "•"
+            }
+        }
+    }
+    val markerGutter = remember(markers, coreMarkerTextStyle, markerParagraphStyle, markerMeasurer) {
+        val widestMarker = markers.maxOfOrNull { marker ->
+            markerMeasurer.measure(
+                text = marker,
+                constraints = LayoutConstraints(maxWidth = 100_000f),
+                textStyle = coreMarkerTextStyle,
+                paragraphStyle = markerParagraphStyle,
+            ).size.width
+        } ?: 0f
+        ceil(widestMarker / coreMarkerTextStyle.fontSize).toInt().coerceAtLeast(1).ic
+    }
+    val markerWidth = with(density) { markerGutter.toPx(coreMarkerTextStyle.fontSize).toDp() }
+    val narrowBreakpoint = with(density) {
+        style.listNarrowBreakpoint.toPx(coreMarkerTextStyle.fontSize).toDp()
+    }
+
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val narrowMeasure = maxWidth < narrowBreakpoint
+        val minimumContentIndent = if (narrowMeasure) {
+            style.listNarrowContentIndent
+        } else {
+            style.listContentIndent
+        }
+        val contentIndent = if (markerGutter.count >= minimumContentIndent.count) {
+            markerGutter
+        } else {
+            minimumContentIndent
+        }
+        val markerLeadingSpace = with(density) {
+            (contentIndent + -markerGutter).toPx(coreMarkerTextStyle.fontSize).toDp()
+        }
+
+        Column {
+            block.items.forEachIndexed { index, item ->
+                if (index > 0) {
+                    Spacer(Modifier.height(if (block.tight) style.compactBlockSpacing else style.listItemSpacing))
                 }
-                BasicText(
-                    text = marker,
-                    modifier = Modifier.widthIn(min = style.listMarkerWidth),
-                    style = style.body,
-                )
-                MarkdownBlocks(
-                    blocks = item.blocks,
-                    modifier = Modifier.weight(1f),
-                    style = style,
-                    slots = slots,
-                    fallbackPolicy = fallbackPolicy,
-                    onLinkClick = onLinkClick,
-                    onFootnoteClick = onFootnoteClick,
-                    compact = block.tight,
-                )
+                Row(Modifier.fillMaxWidth().padding(start = markerLeadingSpace)) {
+                    val marker = markers[index]
+                    CjkText(
+                        text = marker,
+                        modifier = Modifier
+                            .width(markerWidth)
+                            .alignByBaseline(),
+                        style = style.body,
+                        paragraphStyle = markerParagraphStyle,
+                        measurer = markerMeasurer,
+                    )
+                    MarkdownBlocks(
+                        blocks = item.blocks,
+                        modifier = Modifier
+                            .weight(1f)
+                            .alignByBaseline(),
+                        style = style,
+                        slots = slots,
+                        inlineSlots = inlineSlots,
+                        fallbackPolicy = fallbackPolicy,
+                        onLinkClick = onLinkClick,
+                        onFootnoteClick = onFootnoteClick,
+                        compact = block.tight,
+                    )
+                }
             }
         }
     }
@@ -243,129 +315,139 @@ private fun MarkdownTextBlock(
     text: MarkdownText,
     textStyle: TextStyle,
     markdownStyle: MarkdownStyle,
+    inlineSlots: MarkdownInlineSlots,
     fallbackPolicy: MarkdownTextFallbackPolicy,
     onLinkClick: ((String) -> Unit)?,
     onFootnoteClick: ((String) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    val annotated = remember(text, markdownStyle, onLinkClick, onFootnoteClick) {
-        text.toAnnotatedString(markdownStyle, onLinkClick, onFootnoteClick)
+    val footnoteNavigationState = LocalMarkdownFootnoteNavigationState.current
+    val footnoteLabels = remember(text) {
+        text.spans.mapNotNull { (it.mark as? MarkdownTextMark.Footnote)?.label }.distinct()
     }
-    val compatibility = annotated.cjkTextCompatibility(textStyle)
-    val shouldFallback = fallbackPolicy == MarkdownTextFallbackPolicy.Automatic &&
-        (text.issues.isNotEmpty() || !compatibility.canPreserveAllKnownSemantics)
-    if (shouldFallback) {
-        BasicText(text = annotated, modifier = modifier, style = textStyle)
-    } else {
-        CjkText(text = annotated, modifier = modifier, style = textStyle)
-    }
-}
-
-internal fun MarkdownText.toAnnotatedString(
-    style: MarkdownStyle,
-    onLinkClick: ((String) -> Unit)? = null,
-    onFootnoteClick: ((String) -> Unit)? = null,
-): AnnotatedString {
-    val rubySpans = spans
-        .filter { it.mark is MarkdownTextMark.Ruby }
-        .sortedBy { it.range.start }
-    val withRuby = AnnotatedString.Builder().apply {
-        var cursor = 0
-        rubySpans.forEach { span ->
-            if (span.range.start < cursor || span.range.endExclusive > value.length) return@forEach
-            append(value.substring(cursor, span.range.start))
-            ruby(
-                base = value.substring(span.range.start, span.range.endExclusive),
-                ruby = (span.mark as MarkdownTextMark.Ruby).annotation,
-            )
-            cursor = span.range.endExclusive
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    DisposableEffect(footnoteNavigationState, footnoteLabels, bringIntoViewRequester) {
+        footnoteLabels.forEach { label ->
+            footnoteNavigationState?.registerReference(label, bringIntoViewRequester)
         }
-        append(value.substring(cursor))
-    }.toAnnotatedString()
-
-    return AnnotatedString.Builder(withRuby).apply {
-        spans.forEach { span ->
-            val start = span.range.start.coerceIn(0, length)
-            val end = span.range.endExclusive.coerceIn(start, length)
-            when (val mark = span.mark) {
-                MarkdownTextMark.Strong -> addStyle(SpanStyle(fontWeight = FontWeight.Bold), start, end)
-                MarkdownTextMark.Emphasis -> addStyle(SpanStyle(fontStyle = FontStyle.Italic), start, end)
-                MarkdownTextMark.Strikethrough -> addStyle(
-                    SpanStyle(textDecoration = TextDecoration.LineThrough),
-                    start,
-                    end,
-                )
-
-                MarkdownTextMark.InlineCode -> addStyle(style.inlineCode, start, end)
-                MarkdownTextMark.Highlight -> addStyle(style.highlight, start, end)
-                MarkdownTextMark.Superscript -> addStyle(
-                    SpanStyle(baselineShift = BaselineShift.Superscript, fontSize = 0.8.em),
-                    start,
-                    end,
-                )
-
-                MarkdownTextMark.Subscript -> addStyle(
-                    SpanStyle(baselineShift = BaselineShift.Subscript, fontSize = 0.8.em),
-                    start,
-                    end,
-                )
-
-                MarkdownTextMark.Inserted -> addStyle(
-                    SpanStyle(textDecoration = TextDecoration.Underline),
-                    start,
-                    end,
-                )
-
-                is MarkdownTextMark.Link -> addLink(
-                    LinkAnnotation.Url(
-                        url = mark.destination,
-                        styles = TextLinkStyles(style = style.link),
-                        linkInteractionListener = onLinkClick?.let { callback ->
-                            LinkInteractionListener { link ->
-                                if (link is LinkAnnotation.Url) callback(link.url)
-                            }
-                        },
-                    ),
-                    start,
-                    end,
-                )
-
-                is MarkdownTextMark.Abbreviation -> addStyle(style.abbreviation, start, end)
-                is MarkdownTextMark.Footnote -> {
-                    addStyle(
-                        SpanStyle(baselineShift = BaselineShift.Superscript, fontSize = 0.8.em),
-                        start,
-                        end,
-                    )
-                    addLink(
-                        LinkAnnotation.Clickable(
-                            tag = "footnote",
-                            styles = TextLinkStyles(style = style.link),
-                            linkInteractionListener = { onFootnoteClick?.invoke(mark.label) },
-                        ),
-                        start,
-                        end,
-                    )
-                }
-
-                is MarkdownTextMark.Ruby -> Unit
-                is MarkdownTextMark.InlineMath -> addStyle(style.inlineCode, start, end)
-                is MarkdownTextMark.InlineImage -> addLink(
-                    LinkAnnotation.Url(
-                        url = mark.destination,
-                        styles = TextLinkStyles(style = style.link),
-                        linkInteractionListener = onLinkClick?.let { callback ->
-                            LinkInteractionListener { link ->
-                                if (link is LinkAnnotation.Url) callback(link.url)
-                            }
-                        },
-                    ),
-                    start,
-                    end,
-                )
+        onDispose {
+            footnoteLabels.forEach { label ->
+                footnoteNavigationState?.unregisterReference(label, bringIntoViewRequester)
             }
         }
-    }.toAnnotatedString()
+    }
+    val handleFootnoteClick: ((String) -> Unit)? = if (
+        footnoteNavigationState != null || onFootnoteClick != null
+    ) {
+        { label ->
+            footnoteNavigationState?.bringDefinitionIntoView(label, bringIntoViewRequester)
+            onFootnoteClick?.invoke(label)
+        }
+    } else {
+        null
+    }
+    val resolved = resolveMarkdownText(
+        text = text,
+        style = markdownStyle,
+        textStyle = textStyle,
+        inlineSlots = inlineSlots,
+        onLinkClick = onLinkClick,
+        onFootnoteClick = handleFootnoteClick,
+    )
+    val density = LocalDensity.current
+    val tiqianInlineObjects = resolved.tiqianInlineObjects.map { resolvedObject ->
+        val metrics = requireNotNull(resolvedObject.content.metrics)
+        CjkInlineObject(
+            range = TextRange(resolvedObject.start, resolvedObject.endExclusive),
+            advance = with(density) { metrics.widthPx.toDp() },
+            ascent = with(density) { metrics.ascentPx.toDp() },
+            descent = with(density) { metrics.descentPx.toDp() },
+            leadingBoundary = CjkInlineObjectBoundary(
+                participatesInUniformStretch =
+                    resolvedObject.content.leadingBoundary.participatesInUniformStretch,
+                preferredStretch = resolvedObject.content.leadingBoundary.preferredStretch?.let {
+                        CjkInlineObjectPreferredStretch(
+                        kind = when (it.kind) {
+                            MarkdownInlinePreferredStretchKind.PunctuationTrailing ->
+                                CjkInlineObjectPreferredStretchKind.PunctuationTrailing
+                            MarkdownInlinePreferredStretchKind.Relation ->
+                                CjkInlineObjectPreferredStretchKind.Relation
+                            MarkdownInlinePreferredStretchKind.BinaryOperator ->
+                                CjkInlineObjectPreferredStretchKind.BinaryOperator
+                        },
+                        naturalWidth = with(density) { it.naturalWidthPx.toDp() },
+                        targetWidth = with(density) { it.targetWidthPx.toDp() },
+                    )
+                },
+                shrinkCapacity = with(density) {
+                    resolvedObject.content.leadingBoundary.shrinkCapacityPx.toDp()
+                },
+                lineEndDiscardableAdvance = with(density) {
+                    resolvedObject.content.leadingBoundary.lineEndDiscardableAdvancePx.toDp()
+                },
+                preventsLineBreak = resolvedObject.content.leadingBoundary.preventsLineBreak,
+            ),
+            trailingBoundary = CjkInlineObjectBoundary(
+                participatesInUniformStretch =
+                    resolvedObject.content.trailingBoundary.participatesInUniformStretch,
+                preferredStretch = resolvedObject.content.trailingBoundary.preferredStretch?.let {
+                        CjkInlineObjectPreferredStretch(
+                        kind = when (it.kind) {
+                            MarkdownInlinePreferredStretchKind.PunctuationTrailing ->
+                                CjkInlineObjectPreferredStretchKind.PunctuationTrailing
+                            MarkdownInlinePreferredStretchKind.Relation ->
+                                CjkInlineObjectPreferredStretchKind.Relation
+                            MarkdownInlinePreferredStretchKind.BinaryOperator ->
+                                CjkInlineObjectPreferredStretchKind.BinaryOperator
+                        },
+                        naturalWidth = with(density) { it.naturalWidthPx.toDp() },
+                        targetWidth = with(density) { it.targetWidthPx.toDp() },
+                    )
+                },
+                shrinkCapacity = with(density) {
+                    resolvedObject.content.trailingBoundary.shrinkCapacityPx.toDp()
+                },
+                lineEndDiscardableAdvance = with(density) {
+                    resolvedObject.content.trailingBoundary.lineEndDiscardableAdvancePx.toDp()
+                },
+                preventsLineBreak = resolvedObject.content.trailingBoundary.preventsLineBreak,
+            ),
+            content = {
+                resolvedObject.content.content(resolvedObject.content.alternateText)
+            },
+        )
+    }
+    val compatibility = resolved.annotated.cjkTextCompatibility(
+        style = textStyle,
+        inlineObjects = tiqianInlineObjects,
+    )
+    val shouldFallback = fallbackPolicy == MarkdownTextFallbackPolicy.Automatic &&
+        (text.issues.isNotEmpty() || !compatibility.canPreserveAllKnownSemantics)
+    val blockModifier = if (footnoteLabels.isEmpty()) {
+        modifier
+    } else {
+        modifier.bringIntoViewRequester(bringIntoViewRequester)
+    }
+    if (shouldFallback || resolved.requiresComposeFallback) {
+        val fallbackText = resolved.composeFallbackAnnotatedString()
+        BasicText(
+            text = fallbackText,
+            modifier = blockModifier.markdownInlineInteractionSemantics(resolved.interactions),
+            style = textStyle,
+            inlineContent = resolved.inlineContent,
+        )
+    } else {
+        val layoutResult = remember { arrayOfNulls<LayoutResult>(1) }
+        CjkText(
+            text = resolved.annotated,
+            modifier = blockModifier
+                .markdownInlineInteractionSemantics(resolved.interactions)
+                .drawTiqianMarkdownInlineDecorations(resolved.decorations) { layoutResult[0] },
+            style = textStyle,
+            inlineObjects = tiqianInlineObjects,
+            onTextLayout = { layoutResult[0] = it },
+        )
+    }
 }
 
 @Composable
@@ -382,6 +464,7 @@ fun DefaultMarkdownImageBlock(
     block: MarkdownImageBlock,
     style: MarkdownStyle,
     onLinkClick: ((String) -> Unit)? = null,
+    inlineSlots: MarkdownInlineSlots = DefaultMarkdownInlineSlots,
 ) {
     val label = block.description.ifBlank { block.destination }
     MarkdownTextBlock(
@@ -396,18 +479,10 @@ fun DefaultMarkdownImageBlock(
         ),
         textStyle = style.body,
         markdownStyle = style,
+        inlineSlots = inlineSlots,
         fallbackPolicy = MarkdownTextFallbackPolicy.Automatic,
         onLinkClick = onLinkClick,
         onFootnoteClick = null,
-    )
-}
-
-@Composable
-fun DefaultMarkdownMathBlock(block: MarkdownMathBlock, style: MarkdownStyle) {
-    BasicText(
-        text = block.expression,
-        modifier = Modifier.fillMaxWidth().background(style.mathBackground).padding(style.codePadding),
-        style = style.codeBlock,
     )
 }
 
@@ -423,6 +498,7 @@ fun DefaultMarkdownTable(
     fallbackPolicy: MarkdownTextFallbackPolicy = MarkdownTextFallbackPolicy.Automatic,
     onLinkClick: ((String) -> Unit)? = null,
     onFootnoteClick: ((String) -> Unit)? = null,
+    inlineSlots: MarkdownInlineSlots = DefaultMarkdownInlineSlots,
 ) {
     Column(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
         block.rows.forEach { row ->
@@ -449,6 +525,7 @@ fun DefaultMarkdownTable(
                         text = cell.text,
                         textStyle = textStyle,
                         markdownStyle = style,
+                        inlineSlots = inlineSlots,
                         fallbackPolicy = fallbackPolicy,
                         onLinkClick = onLinkClick,
                         onFootnoteClick = onFootnoteClick,
@@ -468,18 +545,50 @@ fun DefaultMarkdownFootnoteDefinition(
     fallbackPolicy: MarkdownTextFallbackPolicy = MarkdownTextFallbackPolicy.Automatic,
     onLinkClick: ((String) -> Unit)? = null,
     onFootnoteClick: ((String) -> Unit)? = null,
+    inlineSlots: MarkdownInlineSlots = DefaultMarkdownInlineSlots,
 ) {
-    Row(Modifier.fillMaxWidth()) {
-        BasicText(
-            text = "[${block.index}]",
-            modifier = Modifier.widthIn(min = style.footnoteLabelWidth),
-            style = style.body,
-        )
+    val footnoteNavigationState = LocalMarkdownFootnoteNavigationState.current
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    DisposableEffect(footnoteNavigationState, block.label, bringIntoViewRequester) {
+        footnoteNavigationState?.registerDefinition(block.label, bringIntoViewRequester)
+        onDispose {
+            footnoteNavigationState?.unregisterDefinition(block.label, bringIntoViewRequester)
+        }
+    }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .bringIntoViewRequester(bringIntoViewRequester),
+    ) {
+        Row(
+            modifier = Modifier
+                .widthIn(min = style.footnoteLabelWidth),
+        ) {
+            BasicText(
+                text = "[${block.index}]",
+                style = style.body.merge(style.footnote).copy(fontWeight = FontWeight.SemiBold),
+            )
+            Spacer(Modifier.width(8.dp))
+            BasicText(
+                text = "↩",
+                modifier = Modifier.let { modifier ->
+                    if (footnoteNavigationState == null) {
+                        modifier
+                    } else {
+                        modifier.clickable {
+                            footnoteNavigationState.bringReferenceIntoView(block.label)
+                        }
+                    }
+                },
+                style = style.body.merge(style.footnote).merge(style.link),
+            )
+        }
         MarkdownBlocks(
             blocks = block.blocks,
             modifier = Modifier.weight(1f),
             style = style,
             slots = slots,
+            inlineSlots = inlineSlots,
             fallbackPolicy = fallbackPolicy,
             onLinkClick = onLinkClick,
             onFootnoteClick = onFootnoteClick,

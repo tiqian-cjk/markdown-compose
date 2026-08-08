@@ -33,3 +33,15 @@ if (tiqianSettings.isFile) {
         }
     }
 }
+
+val mathCheckout = providers.gradleProperty("mathCheckout").orNull
+    ?: System.getenv("MATH_COMPOSE_CHECKOUT")
+    ?: "../math-compose"
+val mathSettings = file(mathCheckout).resolve("settings.gradle.kts")
+if (mathSettings.isFile) {
+    includeBuild(mathCheckout) {
+        dependencySubstitution {
+            substitute(module("org.tiqian.math:math-compose")).using(project(":frontend:math-compose"))
+        }
+    }
+}

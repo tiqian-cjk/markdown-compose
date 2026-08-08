@@ -85,6 +85,7 @@ data class MarkdownImageBlock(
     val widthPixels: Int?,
     val heightPixels: Int?,
     override val metadata: MarkdownNodeMetadata,
+    val attributes: Map<String, String> = emptyMap(),
 ) : MarkdownBlock
 
 data class MarkdownMathBlock(
@@ -178,6 +179,7 @@ sealed interface MarkdownTextMark {
     data object Superscript : MarkdownTextMark
     data object Subscript : MarkdownTextMark
     data object Inserted : MarkdownTextMark
+    data object KeyboardInput : MarkdownTextMark
 
     data class Link(
         val destination: String,
@@ -207,6 +209,13 @@ sealed interface MarkdownTextMark {
         val title: String? = null,
         val widthPixels: Int? = null,
         val heightPixels: Int? = null,
+        val attributes: Map<String, String> = emptyMap(),
+    ) : MarkdownTextMark
+
+    /** Host-defined inline semantics retained as pure data across the renderer boundary. */
+    data class Custom(
+        val kind: String,
+        val attributes: Map<String, String> = emptyMap(),
     ) : MarkdownTextMark
 }
 

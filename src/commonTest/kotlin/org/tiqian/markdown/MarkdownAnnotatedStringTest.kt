@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextDecoration
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -46,5 +47,55 @@ class MarkdownAnnotatedStringTest {
 
         assertEquals("漢字", annotated.text)
         assertEquals("かんじ", annotated.getStringAnnotations(0, annotated.length).single().item)
+    }
+
+    @Test
+    fun abbreviationKeepsExpandedTextAnnotation() {
+        val text = MarkdownText(
+            value = "CLREQ",
+            spans = listOf(
+                MarkdownTextSpan(
+                    MarkdownTextRange(0, 5),
+                    MarkdownTextMark.Abbreviation("Requirements for Chinese Text Layout"),
+                ),
+            ),
+        )
+
+        val annotated = text.toAnnotatedString(MarkdownStyle())
+
+        assertEquals(
+            "Requirements for Chinese Text Layout",
+            annotated.getStringAnnotations("abbreviation", 0, annotated.length).single().item,
+        )
+    }
+
+    @Test
+    fun keyboardAndFootnoteUseDedicatedStyles() {
+        val keyboardStyle = SpanStyle(color = Color.Red, fontWeight = FontWeight.Medium)
+        val footnoteStyle = SpanStyle(color = Color.Green)
+        val text = MarkdownText(
+            value = "Ctrl[1]",
+            spans = listOf(
+                MarkdownTextSpan(MarkdownTextRange(0, 4), MarkdownTextMark.KeyboardInput),
+                MarkdownTextSpan(MarkdownTextRange(4, 7), MarkdownTextMark.Footnote("1", 1)),
+            ),
+        )
+
+        val annotated = text.toAnnotatedString(
+            MarkdownStyle(
+                keyboardInput = keyboardStyle,
+                footnote = footnoteStyle,
+            ),
+        )
+
+        assertTrue(annotated.spanStyles.any { it.start == 0 && it.end == 4 && it.item.color == Color.Red })
+        assertTrue(
+            annotated.spanStyles.any {
+                it.start == 4 && it.end == 7 &&
+                    it.item.color == Color.Green &&
+                    it.item.baselineShift == BaselineShift.Superscript
+            },
+        )
+        assertTrue(annotated.getLinkAnnotations(4, 7).single().item is LinkAnnotation.Clickable)
     }
 }
